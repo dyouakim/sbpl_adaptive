@@ -39,6 +39,7 @@ add_library(
     src/common.cpp
     src/core/search/adaptive_planner.cpp
     src/core/search/araplanner_ad.cpp
+    src/core/search/traplanner.cpp
     src/mrep/graph/adaptive_state_representation.cpp
     src/mrep/graph/multirep_adaptive_discrete_space.cpp
     src/mrep/graph/projection.cpp

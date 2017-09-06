@@ -2,13 +2,25 @@
 #define SBPL_ADAPTIVE_TRAPLANNER_H
 
 // standard includes
+#include <assert.h>
 #include <stdio.h>
 #include <time.h>
 #include <vector>
+#include <algorithm> 
 
 // system includes
-#include <sbpl/headers.h>
+#include <sbpl/heuristics/heuristic.h>
+#include <sbpl/planners/planner.h>
+#include <smpl/intrusive_heap.h>
+#include <smpl/time.h>
+#include <smpl/search/arastar.h>
+#include <smpl/ros/planner_allocator.h>
 
+// project includes
+#include <sbpl_adaptive/common.h>
+#include <sbpl_adaptive/core/search/adaptive_planner.h>
+
+namespace sbpl {
 // control of EPS
 
 // initial suboptimality bound (cost solution <= cost(eps*cost optimal solution)
@@ -21,10 +33,9 @@
 #define TRA_INCONS_LIST_ID 0
 #define TRAMDP_STATEID2IND ARAMDP_STATEID2IND
 
-struct TRAState : public AbstractSearchState
+struct TRAState : public heap_element
 {
-    /// \brief the MDP state itself (pointer to the graph represented as MDPstates)
-    CMDPSTATE* MDPstate;
+    int state_id;       // corresponding graph state
 
     /// \brief TRA* relevant data
     unsigned int E; // expansion time
@@ -35,18 +46,22 @@ struct TRAState : public AbstractSearchState
     std::vector<unsigned int> gval_hist;
 
     unsigned int v;
-    unsigned int g;
-    short unsigned int iterationclosed;
-    short unsigned int callnumberaccessed;
+    unsigned int g;     // cost-to-come
+    unsigned int h;     // estimated cost-to-go
+    unsigned int f;     // (g + eps * h) at time of insertion into OPEN
+    unsigned int eg;    // g-value at time of expansion
+            
+    short unsigned int iteration_closed;
+    short unsigned int call_number;
     short unsigned int numofexpands;
 
     /// \brief best predecessor and the action from it, used only in forward searches
-    CMDPSTATE *bestpredstate;
+    TRAState *bestpredstate;
 
     /// \brief the next state if executing best action
-    CMDPSTATE  *bestnextstate;
+    TRAState  *bestnextstate;
     unsigned int costtobestnextstate;
-    int h;
+    bool incons;
 
     TRAState() {};
     ~TRAState() {};
@@ -60,23 +75,140 @@ struct TRAState : public AbstractSearchState
     }
 };
 
-typedef struct TRASEARCHSTATESPACE
+struct SearchStateCompare
+    {
+        bool operator()(const TRAState& s1, const TRAState& s2) const {
+            return s1.f < s2.f;
+        }
+    };
+
+
+class TRAPlanner : public SBPLPlanner
 {
-    double eps;
-    double eps_satisfied;
 
-    CHeap* heap;
-    CList* inconslist;
+public:
 
-    short unsigned int searchiteration;
-    short unsigned int callnumber;
+
+    // parameters for controlling how long the search runs
+    struct TimeParameters
+    {
+        bool bounded;
+        bool improve;
+        enum TimingType { EXPANSIONS, TIME } type;
+        int max_expansions_init;
+        int max_expansions;
+        clock::duration max_allowed_time_init;
+        clock::duration max_allowed_time;
+    };
+
+
+    TRAPlanner(DiscreteSpaceInformation* space, Heuristic* heuristic, bool bForwardSearch);
+
+    ~TRAPlanner();
+
+    void allowPartialSolutions(bool enabled) { m_allow_partial_solutions = enabled; }
+    bool allowPartialSolutions() const { return m_allow_partial_solutions; }
+
+    void setAllowedRepairTime(double allowed_time_secs)
+    { m_time_params.max_allowed_time = to_duration(allowed_time_secs); }
+
+    double allowedRepairTime() const
+    { return to_seconds(m_time_params.max_allowed_time); }
+
+    int replan( const TimeParameters &params, std::vector<int>* solution, int* cost);
+    /// \name Required Functions from SBPLPlanner
+    ///@{
+    int replan(double allowed_time_secs, std::vector<int>* solution) override;
+    int replan(double allowed_time_secs, std::vector<int>* solution, int* solcost) override;
+    int set_goal(int state_id) override;
+    int set_start(int state_id) override;
+    int force_planning_from_scratch() override;
+    int set_search_mode(bool bSearchUntilFirstSolution) override;
+    void costs_changed(const StateChangeQuery& stateChange) override;
+    ///@}
+
+    /// \name Reimplemented Functions from SBPLPlanner
+    ///@{
+    int replan(std::vector<int>* solution, ReplanParams params) override;
+    int replan(std::vector<int>* solution, ReplanParams params, int* solcost) override;
+    int force_planning_from_scratch_and_free_memory() override;
+    double get_solution_eps() const { return m_satisfied_eps; }
+    int get_n_expands() const  { return m_expand_count; }
+    double get_initial_eps() {return m_initial_eps;}
+    double get_initial_eps_planning_time() {  return to_seconds(m_search_time_init); }
+    double get_final_eps_planning_time() { return to_seconds(m_search_time); }
+    int get_n_expands_init_solution() {  return m_expand_count_init; }
+    double get_final_epsilon() { return m_final_eps;}
+    void get_search_stats(std::vector<PlannerStats>* s) override;
+    void set_initialsolution_eps(double initialsolution_eps) {m_initial_eps = initialsolution_eps;}
+    ///@}
+
+  
+    /// \brief direct form of informing the search about the new edge costs
+    /// \param succsIDV array of successors of changed edges
+    /// \note this is used when the search is run forwards
+    void update_succs_of_changededges(std::vector<int>* succsIDV);
+
+
+    //TODO: implement!!!!!!!!!!!
+    /// \brief direct form of informing the search about the new edge costs
+    /// \param predsIDV array of predecessors of changed edges
+    /// \note this is used when the search is run backwards
+    void update_preds_of_changededges(std::vector<int>* predsIDV);
+
+   
+private:
+
+
+    DiscreteSpaceInformation* m_space;
+    Heuristic* m_heur;
+
+    TimeParameters m_time_params;
+
+    double m_initial_eps;
+    double m_final_eps;
+    double m_delta_eps;
+    double m_satisfied_eps;
+
+    double initial_eps_planning_time;
+    double final_eps_planning_time;
+    
+
+    bool m_allow_partial_solutions;
+    bool bforwardsearch;
+    // if true, then search until first solution (see planner.h for search
+    // modes)
+    bool bsearchuntilfirstsolution;
+
+    std::vector<TRAState*> m_states;
+
+    int m_start_state_id;   // graph state id for the start state
+    int m_goal_state_id;    // graph state id for the goal state
+
+    // map from graph state id to search state id, incrementally expanded
+    // as states are encountered during the search
+    std::vector<int> m_graph_to_search_map;
+
+    // search state (not including the values of g, f, back pointers, and
+    // closed list from m_stats)
+    intrusive_heap<TRAState, SearchStateCompare> m_open;
+    std::vector<TRAState*> m_incons;
+    double m_curr_eps;
+    int m_iteration;
+
+    int m_call_number;          // for lazy reinitialization of search states
+    int m_last_start_state_id;  // for lazy reinitialization of the search tree
+    int m_last_goal_state_id;   // for updating the search tree when the goal changes
+    double m_last_eps;          // for updating the search tree when heuristics change
+
+    int m_expand_count_init;
+    clock::duration m_search_time_init;
+    int m_expand_count;
+    clock::duration m_search_time;
+    int MaxMemoryCounter;
+    FILE *fDeb;
 
     unsigned int expansion_step;
-
-    CMDPSTATE* searchgoalstate;
-    CMDPSTATE* searchstartstate;
-
-    CMDP searchMDP;
 
     bool bReevaluatefvals;
     bool bReinitializeSearchStateSpace;
@@ -86,215 +218,68 @@ typedef struct TRASEARCHSTATESPACE
 
     std::vector<TRAState*> seen_states;
 
-} TRASearchStateSpace_t;
 
-SBPL_CLASS_FORWARD(TRAPlanner)
+    void convertTimeParamsToReplanParams(const TimeParameters& t,ReplanParams& r) const;
+    void convertReplanParamsToTimeParams(const ReplanParams& r, TimeParameters& t);
 
-class TRAPlanner : public SBPLPlanner
-{
-public:
+    bool timedOut(int elapsed_expansions, const clock::duration& elapsed_time) const;
 
-    TRAPlanner(DiscreteSpaceInformation *environment, bool bForwardSearch);
+    int improvePath(const clock::time_point& start_time, TRAState* goal_state, int& elapsed_expansions, clock::duration& elapsed_time);
 
-    ~TRAPlanner();
+    void expand(TRAState* s);
 
-    /// \brief replan a path within the allocated time, return the solution in
-    /// the vector
-    int replan(
-        double allocated_time_secs,
-        std::vector<int>* solution_stateIDs_V);
+    void recomputeHeuristics();
+    void reorderOpen();
+    int computeKey(TRAState* s) const;
 
-    /// \brief replan a path within the allocated time, return the solution in
-    /// the vector, also returns solution cost
-    int replan(
-        double allocated_time_secs,
-        std::vector<int>* solution_stateIDs_V,
-        int* solcost);
+    TRAState* getSearchState(int state_id);
+    TRAState* createState(int state_id);
+    void reinitSearchState(TRAState* state);
 
-    /// \brief set the goal state
-    int set_goal(int goal_stateID);
+    void extractPath(TRAState* to_state, std::vector<int>& solution, int& cost) const;
 
-    /// \brief set the start state
-    int set_start(int start_stateID);
+    bool RestoreSearchTree(unsigned int expansionStep);
 
-    /// \brief set a flag to get rid of the previous search efforts, release the
-    /// memory and re-initialize the search, when the next replan is called
-    int force_planning_from_scratch();
+    bool updateParents(TRAState* state, unsigned int expansionStep, TRAState* latestParent, unsigned int *latestGVal);
 
-    /// \brief you can either search forwards or backwards
-    int set_search_mode(bool bSearchUntilFirstSolution);
+    bool storeParent(TRAState* succ_state, TRAState* state, unsigned int gVal, unsigned int expansionStep);
 
-    /// \brief inform the search about the new edge costs
-    void costs_changed(StateChangeQuery const & stateChange);
-
-    /// \brief direct form of informing the search about the new edge costs
-    /// \param succsIDV array of successors of changed edges
-    /// \note this is used when the search is run forwards
-    void update_succs_of_changededges(std::vector<int>* succsIDV);
-
-    /// \brief direct form of informing the search about the new edge costs
-    /// \param predsIDV array of predecessors of changed edges
-    /// \note this is used when the search is run backwards
-    void update_preds_of_changededges(std::vector<int>* predsIDV);
-
-    /// \brief returns the suboptimality bound on the currently found solution
-    virtual double get_solution_eps() const { return pSearchStateSpace_->eps_satisfied; };
-
-    /// \brief returns the number of states expanded so far
-    virtual int get_n_expands() const { return searchexpands; }
-
-    /// \brief returns the initial epsilon
-    double get_initial_eps(){return finitial_eps;};
-
-    /// \brief returns the time taken to find the first solution
-    double get_initial_eps_planning_time(){ return finitial_eps_planning_time; }
-
-    /// \brief returns the time taken to get the final solution
-    double get_final_eps_planning_time(){ return final_eps_planning_time; };
-
-    /// \brief returns the number of expands to find the first solution
-    int get_n_expands_init_solution(){ return num_of_expands_initial_solution; };
-
-    /// \brief returns the final epsilon achieved during the search
-    double get_final_epsilon(){return final_eps;};
-
-    /// \brief returns the value of the initial epsilon (suboptimality bound) used
-    virtual void set_initialsolution_eps(double initialsolution_eps) {finitial_eps = initialsolution_eps;};
-
-private:
-
-    // member variables
-    double finitial_eps;
-    double finitial_eps_planning_time;
-    double final_eps_planning_time;
-    double final_eps;
-    int num_of_expands_initial_solution;
-    MDPConfig* MDPCfg_;
-
-    bool bforwardsearch;
-
-    // if true, then search until first solution (see planner.h for search
-    // modes)
-    bool bsearchuntilfirstsolution;
-
-    TRASearchStateSpace_t *pSearchStateSpace_;
-
-    unsigned int searchexpands;
-    int MaxMemoryCounter;
-    clock_t TimeStarted;
-    FILE *fDeb;
-
-    // member functions
-
-    bool RestoreSearchTree(
-        TRASearchStateSpace_t* pSearchStateSpace,
-        unsigned int expansion_step);
-
-    bool fixParents(
-        TRASearchStateSpace_t* pSearchStateSpace,
-        TRAState* state,
-        unsigned int expansion_step);
-
-    void Recomputegval(TRAState* state);
-
-    void Initialize_searchinfo(
-        CMDPSTATE* state,
-        TRASearchStateSpace_t* pSearchStateSpace);
-
-    CMDPSTATE* CreateState(
-        int stateID,
-        TRASearchStateSpace_t* pSearchStateSpace);
-
-    CMDPSTATE* GetState(int stateID, TRASearchStateSpace_t* pSearchStateSpace);
+    void heuristicChanged();
 
     unsigned int GetStateCreationTime(int stateID)
     {
-        CMDPSTATE* mdp_state = GetState(stateID, pSearchStateSpace_);
-        TRAState* state = (TRAState*)(mdp_state->PlannerSpecificData);
+        TRAState* state = getSearchState(stateID);
         return state->C;
     };
 
-    int ComputeHeuristic(
-        CMDPSTATE* MDPstate,
-        TRASearchStateSpace_t* pSearchStateSpace);
+    // initialization of the start state
+    void InitializeSearch();
 
-    // initialization of a state
-    void InitializeSearchStateInfo(
-        TRAState* state,
-        TRASearchStateSpace_t* pSearchStateSpace);
-
-    // re-initialization of a state
-    void ReInitializeSearchStateInfo(
-        TRAState* state,
-        TRASearchStateSpace_t* pSearchStateSpace);
-
-    void DeleteSearchStateData(TRAState* state);
+    void Recomputegval(TRAState* state);
 
     // used for backward search
-    void UpdatePreds(TRAState* state, TRASearchStateSpace_t* pSearchStateSpace);
+    void UpdatePreds(TRAState* state);
 
     //used for forward search
-    void UpdateSuccs(TRAState* state, TRASearchStateSpace_t* pSearchStateSpace);
-
-    int GetGVal(int StateID, TRASearchStateSpace_t* pSearchStateSpace);
-
-    // returns 1 if the solution is found, 0 if the solution does not exist and
-    // 2 if it ran out of time
-    int ImprovePath(
-        TRASearchStateSpace_t* pSearchStateSpace,
-        double MaxNumofSecs);
-
-    void BuildNewOPENList(TRASearchStateSpace_t* pSearchStateSpace);
-
-    void Reevaluatefvals(TRASearchStateSpace_t* pSearchStateSpace);
-
-    // creates (allocates memory) search state space
-    // does not initialize search statespace
-    int CreateSearchStateSpace(TRASearchStateSpace_t* pSearchStateSpace);
-
-    // deallocates memory used by SearchStateSpace
-    void DeleteSearchStateSpace(TRASearchStateSpace_t* pSearchStateSpace);
+    void UpdateSuccs(TRAState* state);
+    
+    void BuildNewOPENList();
 
     // debugging
     void PrintSearchState(TRAState* state, FILE* fOut);
 
-    // reset properly search state space
-    // needs to be done before deleting states
-    int ResetSearchStateSpace(TRASearchStateSpace_t* pSearchStateSpace);
-
-    // initialization before each search
-    void ReInitializeSearchStateSpace(TRASearchStateSpace_t* pSearchStateSpace);
-
-    // very first initialization
-    int InitializeSearchStateSpace(TRASearchStateSpace_t* pSearchStateSpace);
-
-    int SetSearchGoalState(
-        int SearchGoalStateID,
-        TRASearchStateSpace_t* pSearchStateSpace);
-
-    int SetSearchStartState(
-        int SearchStartStateID,
-        TRASearchStateSpace_t* pSearchStateSpace);
-
-    // reconstruct path functions are only relevant for forward search
-    int ReconstructPath(TRASearchStateSpace_t* pSearchStateSpace);
-
-    void PrintSearchPath(TRASearchStateSpace_t* pSearchStateSpace, FILE* fOut);
-
-    int getHeurValue(TRASearchStateSpace_t* pSearchStateSpace, int StateID);
-
-    // get path
-    std::vector<int> GetSearchPath(
-        TRASearchStateSpace_t* pSearchStateSpace,
-        int& solcost);
-
-    bool Search(
-        TRASearchStateSpace_t* pSearchStateSpace,
-        std::vector<int>& pathIds,
-        int & PathCost,
-        bool bFirstSolution,
-        bool bOptimalSolution,
-        double MaxNumofSecs);
 };
 
+namespace motion 
+{
+class TRAPlannerAllocator : public PlannerAllocator
+{
+public:
+
+    SBPLPlannerPtr allocate(
+        const RobotPlanningSpacePtr& pspace,
+        const RobotHeuristicPtr& heuristic) override;
+};
+}//motion
+} //sbpl
 #endif
