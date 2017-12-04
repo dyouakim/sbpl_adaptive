@@ -19,7 +19,8 @@ find_package(catkin REQUIRED COMPONENTS
     smpl
     tf
     trajectory_msgs
-    visualization_msgs)
+    visualization_msgs
+ leatherman)
 
 find_package(Eigen REQUIRED)
 

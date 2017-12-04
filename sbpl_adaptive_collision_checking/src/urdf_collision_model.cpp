@@ -99,8 +99,9 @@ bool URDFCollisionModel::initFromURDF(
     return true;
 }
 
-bool URDFCollisionModel::initFromModel(
-    const moveit::core::RobotModelPtr &robot_model)
+bool URDFCollisionModel::initFromModel( 
+     const moveit::core::RobotModelPtr &robot_model)
+     //robot_model::RobotModelConstPtr robot_model)
 {
     if (!robot_model) {
         return false;
@@ -109,8 +110,8 @@ bool URDFCollisionModel::initFromModel(
     robot_model_ = robot_model;
     urdf_ = robot_model->getURDF();
     srdf_ = robot_model->getSRDF();
-
-    robot_state_ = boost::make_shared<moveit::core::RobotState>(robot_model);
+    moveit::core::RobotState state(robot_model);
+    robot_state_ =  static_cast<moveit::core::RobotStatePtr>(&state);
     robot_state_->setToDefaultValues();
 
     return true;
@@ -120,9 +121,10 @@ moveit::core::RobotStatePtr URDFCollisionModel::getStateAt(
     const URDFModelCoords &coords) const
 {
     assert(coords.positions.size() == robot_model_->getVariableCount());
-    auto state = boost::make_shared<moveit::core::RobotState>(robot_model_);
-    updateFK(*state, coords);
-    return state;
+    moveit::core::RobotState state(robot_model_);
+    auto stateRef = static_cast<moveit::core::RobotStatePtr>(&state);
+    updateFK(*stateRef, coords);
+    return stateRef;
 }
 
 void URDFCollisionModel::PrintModelInfo(std::ostream &o) const

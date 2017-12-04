@@ -115,6 +115,8 @@ public:
     double allowedRepairTime() const
     { return to_seconds(m_time_params.max_allowed_time); }
 
+    void costs_changed();
+    
     int replan( const TimeParameters &params, std::vector<int>* solution, int* cost);
     /// \name Required Functions from SBPLPlanner
     ///@{

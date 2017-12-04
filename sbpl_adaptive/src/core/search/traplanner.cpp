@@ -51,6 +51,7 @@ TRAPlanner::TRAPlanner( DiscreteSpaceInformation* space, Heuristic* heuristic, b
     m_time_params.max_expansions = 0;
     m_time_params.max_allowed_time_init = clock::duration::zero();
     m_time_params.max_allowed_time = clock::duration::zero();
+    ROS_WARN_STREAM("Tree Restoring A* instantiated!");
 }
 
 TRAPlanner::~TRAPlanner()
@@ -58,6 +59,17 @@ TRAPlanner::~TRAPlanner()
     for (TRAState* s : m_states) {
         delete s;
     }
+}
+
+/// Return statistics for each completed search iteration.
+void TRAPlanner::get_search_stats(std::vector<PlannerStats>* s)
+{
+    PlannerStats stats;
+    stats.eps = m_curr_eps;
+    stats.cost;
+    stats.expands = m_expand_count;
+    stats.time = to_seconds(m_search_time);
+    s->push_back(stats);
 }
 
 enum ReplanResultCode
@@ -283,6 +295,12 @@ void TRAPlanner::costs_changed(const StateChangeQuery& stateChange)
 {
     ROS_ERROR_NAMED(SLOG,"costs_changed(..) reInit!");
     force_planning_from_scratch();
+}
+
+void TRAPlanner::costs_changed()
+{
+    ROS_ERROR_NAMED(SLOG,"costs_changed() reInit!");
+    force_planning_from_scratch_and_free_memory();
 }
 
 
@@ -533,6 +551,8 @@ TRAState* TRAPlanner::createState(int state_id)
     TRAState* ss = new TRAState;
     ss->state_id = state_id;
     ss->call_number = 0;
+    ss->E = 0;
+    ss->C = 0;
     m_states.push_back(ss);
 
     return ss;
@@ -569,12 +589,12 @@ void TRAPlanner::extractPath(TRAState* to_state, std::vector<int>& solution, int
 bool TRAPlanner::RestoreSearchTree(unsigned int expansionStep)
 {
     m_open.clear();
+    m_states.clear();
     //need to clear closed
     std::vector<TRAState*> current_seen;
 
     TRAState* parent;
     unsigned int parentGVal;
-
     if(expansionStep<=0)
         InitializeSearch();
     else
@@ -666,13 +686,17 @@ void TRAPlanner::heuristicChanged()
         {
             unsigned int cost = s->v + (unsigned int)(m_curr_eps * s->h);
             if(cost > minState->f && minState->C < s->E)
+            {
+                 ROS_ERROR_STREAM("The new E pushed "<<s->E);
                 inconsE.push_back(s->E);
+            }
         }
         if(inconsE.empty())
             done = true;
         else
         {
             unsigned int newStep  = (*std::min_element(inconsE.begin(),inconsE.end())) - 1;
+           
             RestoreSearchTree(newStep); 
         }
     }
